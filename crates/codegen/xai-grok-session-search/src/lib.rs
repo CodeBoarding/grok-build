@@ -2,7 +2,8 @@
 //!
 //! Layering, bottom up:
 //!
-//! - [`fts`] owns the schema, the BM25 query, and the fenced `meta` writes.
+//! - [`query`] parses user syntax into strict or relaxed FTS5 search plans.
+//! - [`fts`] owns the schema, executes those plans with BM25 ranking, and fences `meta` writes.
 //! - `recovery` classifies an unusable database file, quarantines it, and recreates an empty one; `db` adds the open-and-retry helpers on top.
 //! - `doc` turns a session plus its extracted text into an index document.
 //! - `bootstrap` runs the full reindex, held to one process at a time by a lease.
@@ -18,6 +19,7 @@ mod db;
 mod doc;
 pub mod fts;
 mod manager;
+pub mod query;
 mod recovery;
 mod source;
 
@@ -25,4 +27,5 @@ pub use manager::{
     SearchIndexManager, SearchIndexStatus, SessionSearchRequest, SessionSearchResponse,
     evict_session, execute_search,
 };
+pub use query::SessionQuery;
 pub use source::{ContentExtractor, IndexableSession, SessionSource, SessionSourceFactory};

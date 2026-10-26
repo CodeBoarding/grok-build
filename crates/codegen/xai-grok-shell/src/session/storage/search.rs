@@ -14,7 +14,8 @@ use crate::session::persistence::Summary;
 use xai_grok_session_search::{IndexableSession, SessionSource};
 
 pub use xai_grok_session_search::{
-    SearchIndexManager, SearchIndexStatus, SessionSearchRequest, SessionSearchResponse,
+    SearchIndexManager, SearchIndexStatus, SessionQuery, SessionSearchRequest,
+    SessionSearchResponse,
 };
 
 /// Private on purpose: [`start_if_enabled`] is the only way to a manager, so the feature cannot be bypassed.

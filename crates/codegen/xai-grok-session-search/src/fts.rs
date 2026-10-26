@@ -19,6 +19,7 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension, params};
 use xai_sqlite_journal::JournalMode;
 
+use crate::query::SessionQuery;
 use crate::recovery;
 
 /// Bump when making breaking schema changes that require dropping and recreating tables, or to force a rebuild of stale index content.
@@ -439,7 +440,8 @@ impl SessionSearchIndex {
         Ok(ids)
     }
 
-    /// When that intersection matches nothing the query reruns as an OR, so partial matches still show up. A query shaped
+    /// Plain keywords use AND first, then OR when there are no hits. Explicit
+    /// phrases, field scopes, and exclusions use a strict plan with no fallback. A query shaped
     /// like a session id (a full UUID or a hyphenated hex prefix) matches `session_docs.session_id` directly. FTS only
     /// indexes title and content, and a hyphenated UUID `MATCH` looks for tokens that were never indexed.
     pub fn query(
@@ -457,7 +459,8 @@ impl SessionSearchIndex {
             }
         }
 
-        let Some((and_query, or_query)) = Self::build_match_queries(query) else {
+        let plan = SessionQuery::parse(query);
+        let Some(primary) = plan.primary_match() else {
             return Ok(QueryResult {
                 results: Vec::new(),
                 next_offset: None,
@@ -465,10 +468,12 @@ impl SessionSearchIndex {
             });
         };
 
-        let result = self.run_match_query(&and_query, cwd, limit, offset, include_content)?;
+        let result = self.run_match_query(primary, cwd, limit, offset, include_content)?;
         // Gate the fallback on the total (not the page) so every offset of one logical query is served by the same match string
-        if result.total_estimate == Some(0) && and_query != or_query {
-            return self.run_match_query(&or_query, cwd, limit, offset, include_content);
+        if result.total_estimate == Some(0)
+            && let Some(fallback) = plan.fallback_match()
+        {
+            return self.run_match_query(fallback, cwd, limit, offset, include_content);
         }
         Ok(result)
     }
@@ -622,64 +627,6 @@ impl SessionSearchIndex {
             next_offset,
             total_estimate: Some(total_usize),
         })
-    }
-
-    /// Build the AND-joined and OR-joined FTS5 MATCH strings for a query.
-    ///
-    /// The strings are identical for single-token queries, which lets the caller skip the fallback rerun.
-    fn build_match_queries(query: &str) -> Option<(String, String)> {
-        let prefixes: Vec<String> = query
-            .split_whitespace()
-            .flat_map(Self::sanitize_token)
-            .map(Self::token_prefix)
-            .collect();
-
-        if prefixes.is_empty() {
-            let fallback = query.trim();
-            if fallback.is_empty() {
-                return None;
-            }
-            let cleaned = fallback.replace('"', "");
-            let phrase = format!("\"{cleaned}\" *");
-            return Some((phrase.clone(), phrase));
-        }
-
-        Some((prefixes.join(" AND "), prefixes.join(" OR ")))
-    }
-
-    /// Split a query word on every stripped character instead of gluing: `session_picker.rs` searches as `session_picker` and `rs`.
-    /// Gluing produced the never-indexed `session_pickerrs`.
-    /// Fragments with no alphanumeric (`-`, `->`, `_`) are dropped: they tokenize to empty phrases; an empty phrase inside an AND matches nothing.
-    fn sanitize_token(token: &str) -> impl Iterator<Item = &str> {
-        token
-            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-            .filter(|part| part.chars().any(|c| c.is_ascii_alphanumeric()))
-    }
-
-    /// One quoted FTS5 prefix per token, stemmed on the query side only. Plural queries reach singular docs by searching the
-    /// shorter stem (`sessions` becomes `session*`, `caches` becomes `cach*`). Words shorter than four letters, identifiers
-    /// with digits/`_`/`-`, and words ending in `ss` (`pass`, `class`) stay exact.
-    fn token_prefix(token: &str) -> String {
-        let stem = if token.len() < 4 || !token.chars().all(|c| c.is_ascii_alphabetic()) {
-            token
-        } else {
-            let lower = token.to_ascii_lowercase();
-            if lower.ends_with("es") {
-                // Stemming `caches` to `cach` still finds `cache`: the trailing `*` covers the dropped `e`
-                match token.len().checked_sub(2).and_then(|n| token.get(..n)) {
-                    Some(s) => s,
-                    None => token,
-                }
-            } else if lower.ends_with('s') && !lower.ends_with("ss") {
-                match token.len().checked_sub(1).and_then(|n| token.get(..n)) {
-                    Some(s) => s,
-                    None => token,
-                }
-            } else {
-                token
-            }
-        };
-        format!("\"{stem}\" *")
     }
 }
 

@@ -271,6 +271,51 @@ grok sessions search "rate limit"
 
 `grok sessions list` shows sessions for the current working directory, grouped by worktree label. Each row lists the session ID, the creation and update dates, the source status, and the summary. `grok sessions search` combines a local SQLite index with remote results.
 
+### Structured local search
+
+Use quotes, field scopes, and exclusions to narrow the local session history:
+
+```bash
+# An exact sequence of words in either the title or prompts
+grok sessions search '"rate limit"'
+
+# Combine a title prefix, an exact prompt phrase, and a title exclusion
+grok sessions search 'title:retry content:"rate limit" -title:archived'
+
+# Exclude a word or phrase from both fields
+grok sessions search 'rust -tokio -"out of date"'
+
+# Ordinary keyword search without remote results
+grok sessions search --local 'borrow checker'
+```
+
+| Syntax | Meaning |
+|---|---|
+| `rate limit` | Match both word prefixes; if there are no matches, offer sessions matching either word |
+| `"rate limit"` | Match adjacent words in order, without prefix expansion or plural stemming |
+| `title:retry` | Match a word prefix in the session title |
+| `content:"rate limit"` | Match a phrase in the indexed prompts |
+| `-archived` | Exclude sessions matching this prefix in either field |
+| `-title:archived` | Exclude sessions matching this prefix in the title |
+
+Explicit syntax is strict: all positive clauses must match and every exclusion
+must be absent. These queries never fall back to partial matches. Quotes match
+SQLite's indexed words, so case and punctuation are normalized. An unfinished
+quote extends to the end of the query while you type. Empty clauses are ignored;
+a query containing only exclusions returns no results. Field names are lowercase
+and must touch their value. Unknown prefixes and words such as `OR` are searched
+as ordinary text, not interpreted as operators.
+
+Structured CLI queries automatically search the local index only and print a
+notice. The remote keyword service does not implement this syntax. `--local`
+also forces local-only behavior for ordinary keywords. If local session search
+is disabled, both forms report an error instead of returning unconstrained
+remote results. Local results remain scoped to the current working directory.
+
+The same syntax is available in the native session picker's deep content search
+and the `x.ai/session/search` ACP extension's `query` field. Foreign-agent
+histories and remote chat search retain their existing search behavior.
+
 ---
 
 ## The grok usage Subcommand
