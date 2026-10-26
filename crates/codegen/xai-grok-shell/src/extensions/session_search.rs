@@ -25,7 +25,8 @@ use super::ExtResult;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SearchSessionsRequest {
-    /// The search query string.
+    /// Local search query: words, "exact phrases", title:/content: scopes,
+    /// and -exclusions. Explicit syntax is strict; plain words allow partial matches.
     pub query: String,
     /// Optional workspace directory to scope results to.
     #[serde(default)]

@@ -3,6 +3,7 @@ use clap::Subcommand;
 use xai_grok_login::{AuthManager, try_ensure_fresh_auth};
 use xai_grok_shell::agent::config::Config as AgentConfig;
 use xai_grok_shell::session::merge::MergedSession;
+use xai_grok_shell::session::storage::search::SessionQuery;
 use xai_grok_shell::util::grok_home::grok_home;
 #[derive(Debug, clap::Args, Clone)]
 pub struct SessionsArgs {
@@ -18,10 +19,14 @@ enum SessionsCommand {
         #[arg(short = 'n', long, default_value = "20")]
         limit: usize,
     },
-    /// Search sessions by keyword
+    /// Search session titles and prompts with keywords, phrases, or field filters
     Search {
-        /// Search query (searches summaries and first prompts).
+        /// Query: words, "exact phrases", title:term, content:term, or -term.
+        /// Structured queries search the local index only.
         query: String,
+        /// Search only the local index, without remote keyword results
+        #[arg(long)]
+        local: bool,
         /// Maximum number of sessions to show
         #[arg(short = 'n', long, default_value = "20")]
         limit: usize,
@@ -34,14 +39,24 @@ enum SessionsCommand {
 }
 
 pub async fn run(args: SessionsArgs, agent_config: &AgentConfig) -> Result<()> {
+    let local_only = matches!(
+        &args.command,
+        SessionsCommand::Search { query, local, .. }
+            if *local || SessionQuery::parse(query).is_structured()
+    );
     // Best-effort only: never force an interactive public login here. Enterprise deployments may configure only a
     // deployment_key and a custom xai_api_base_url. Otherwise we still proceed so the SessionRegistryClient can use
     // the deployment_key when talking to the custom proxy.
-    let auth = try_ensure_fresh_auth(
-        &agent_config.grok_com_config,
-        agent_config.endpoints.proxy_url(),
-    )
-    .await;
+    // A local search must not wait for an authentication refresh either.
+    let auth = if local_only {
+        None
+    } else {
+        try_ensure_fresh_auth(
+            &agent_config.grok_com_config,
+            agent_config.endpoints.proxy_url(),
+        )
+        .await
+    };
 
     let auth_manager = std::sync::Arc::new(AuthManager::new_with_proxy_base_url(
         &grok_home(),
@@ -73,7 +88,11 @@ pub async fn run(args: SessionsArgs, agent_config: &AgentConfig) -> Result<()> {
             .await;
             print_sessions_grouped(&sessions);
         }
-        SessionsCommand::Search { query, limit } => {
+        SessionsCommand::Search {
+            query,
+            limit,
+            local,
+        } => {
             use std::collections::HashSet;
             use xai_grok_shell::session::merge::REMOTE_TIMEOUT;
             use xai_grok_shell::session::storage::search::{
@@ -82,6 +101,16 @@ pub async fn run(args: SessionsArgs, agent_config: &AgentConfig) -> Result<()> {
 
             // Search is the only subcommand that reads the index, so it is the only one to start one
             let search = xai_grok_shell::session::storage::search::start_if_enabled(agent_config);
+
+            let structured = SessionQuery::parse(&query).is_structured();
+            if local_only && let Some(by) = search.off_reason() {
+                anyhow::bail!(
+                    "local session search is off ({by}); enable it to use local or structured search"
+                );
+            }
+            if structured && !local {
+                eprintln!("Structured query: searching local sessions only.");
+            }
 
             let req = SessionSearchRequest {
                 query,
@@ -92,10 +121,13 @@ pub async fn run(args: SessionsArgs, agent_config: &AgentConfig) -> Result<()> {
             };
             let root = grok_home();
 
-            let remote_limit = (limit * 3).max(100) as i64;
+            let remote_limit = i64::try_from(limit.saturating_mul(3).max(100)).unwrap_or(i64::MAX);
             let (local_resp, remote_results) = tokio::join!(
                 execute_search(IndexDecision::settled(&search), &root, &req),
                 async {
+                    if local_only {
+                        return Vec::new();
+                    }
                     tokio::time::timeout(
                         REMOTE_TIMEOUT,
                         client.search(Some(&req.query), remote_limit),

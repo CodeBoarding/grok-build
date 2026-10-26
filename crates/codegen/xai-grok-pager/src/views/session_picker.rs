@@ -413,6 +413,14 @@ pub(crate) fn filter_session_entries(
     let Some(entries) = entries else {
         return vec![];
     };
+    // Literal title/ID matching cannot enforce phrase and content constraints.
+    // Native structured queries are served exclusively by the deep-search hits.
+    // Foreign histories keep their existing literal search behavior.
+    if !source_filter.is_content_search_disabled()
+        && xai_grok_shell::session::storage::search::SessionQuery::parse(query).is_structured()
+    {
+        return vec![];
+    }
     let q = query.to_lowercase();
     entries
         .iter()
@@ -1035,6 +1043,46 @@ mod tests {
             score: 1.0,
             matched_fields: vec![],
         }
+    }
+
+    #[test]
+    fn structured_search_only_displays_verified_content_hits() {
+        // A literal title containing the query is not evidence that the
+        // content: clause actually matches this session's prompts.
+        let mut unverified = make_entry("unverified", "repo");
+        unverified.summary = "content:rust -title:archived".into();
+        let entries = vec![unverified];
+        let hits = vec![make_content_hit("verified")];
+        let items = build_virtual_list(
+            Some(&entries),
+            Some(&hits),
+            "content:rust -title:archived",
+            SourceFilter::Grok,
+        );
+        assert!(matches!(
+            items.as_slice(),
+            [PickerItem::Content { hit_index: 0 }]
+        ));
+        assert!(
+            build_virtual_list(
+                Some(&entries),
+                None,
+                "content:rust -title:archived",
+                SourceFilter::Grok,
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn external_history_keeps_literal_search_for_structured_looking_titles() {
+        let mut external = make_entry("external", "repo");
+        external.source = "codex".into();
+        external.summary = "title:rust notes".into();
+        assert_eq!(
+            filter_session_entries(Some(&[external]), "title:rust", SourceFilter::External,),
+            [0]
+        );
     }
     /// Grouped entry map places repo headers and resolves mouse-click indices to the correct original session index.
     #[test]
